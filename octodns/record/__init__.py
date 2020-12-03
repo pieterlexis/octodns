@@ -97,6 +97,7 @@ class Record(EqualityTupleMixin):
                 'CAA': CaaRecord,
                 'CNAME': CnameRecord,
                 'DNAME': DnameRecord,
+                'LUA': LuaRecord,
                 'MX': MxRecord,
                 'NAPTR': NaptrRecord,
                 'NS': NsRecord,
@@ -1262,3 +1263,51 @@ class _TxtValue(_ChunkedValue):
 class TxtRecord(_ChunkedValuesMixin, Record):
     _type = 'TXT'
     _value_type = _TxtValue
+
+
+class _LuaValue(EqualityTupleMixin):
+    # PowerDNS supports LUA records
+    @classmethod
+    def validate(cls, data, _type):
+        if not isinstance(data, (list, tuple)):
+            data = (data,)
+        reasons = []
+        for value in data:
+            try:
+                value['type']
+            except KeyError:
+                reasons.append('missing type')
+            try:
+                value['lua']
+            except KeyError:
+                reasons.append('missing lua')
+        return reasons
+
+    @classmethod
+    def process(cls, values):
+        return [_LuaValue(v) for v in values]
+
+    def __init__(self, value):
+        self.type = value['type']
+        self.lua = value['lua']
+
+    @property
+    def data(self):
+        return {
+            'type': self.type,
+            'lua': self.lua,
+        }
+
+    def __repr__(self):
+        return "{} \"{}\"".format(self.type, self.lua)
+
+    def __hash__(self):
+        return hash(self.__repr__())
+
+    def _equality_tuple(self):
+        return (self.type, self.lua)
+
+
+class LuaRecord(_ValuesMixin, Record):
+    _type = 'LUA'
+    _value_type = _LuaValue
