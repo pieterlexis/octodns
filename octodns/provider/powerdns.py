@@ -9,6 +9,8 @@ from requests import HTTPError, Session
 import logging
 
 from ..record import Create, Record
+from ..zone import Zone
+from ..provider.plan import Plan
 from .base import BaseProvider
 
 
@@ -475,3 +477,128 @@ class PowerDnsProvider(PowerDnsBaseProvider):
             }, source=self)
 
         return super(PowerDnsProvider, self)._get_nameserver_record(existing)
+
+
+class PowerDnsSecondaryProvider(PowerDnsBaseProvider):
+    """
+    PowerDNS API v4 Provider for secondary zones
+
+    powerdns-secondary:
+        class: octodns.provider.powerdns.PowerDnsSecondaryProvider
+        # The host on which PowerDNS api is listening (required)
+        host: fqdn
+        # The api key that grans access (required)
+        api_key: api-key
+        # The port on which PowerDNS api is listening (optional, default 8081)
+        port: 8081
+        # Addresses of the primary servers
+        primary_addresses:
+            - 192.0.2.1
+            - 200:db8:2::1
+    """
+
+    def __init__(self, id, host, api_key, port=8081, primary_addresses=None,
+                 *args, **kwargs):
+        self.log = logging.getLogger('PowerDnsSecondaryProvider[{}]'.format(id))
+        self.log.debug('__init__: id=%s, host=%s, port=%d, '
+                       'primary_addresses=%s',
+                       id, host, int(port), primary_addresses)
+        super(PowerDnsSecondaryProvider, self).__init__(id, host=host, api_key=api_key,
+                                                        port=int(port),
+                                                        *args, **kwargs)
+
+        self.primary_addresses = primary_addresses
+
+    def plan(self, desired):
+        self.log.info('plan: desired=%s', desired.name)
+
+        existing = Zone(desired.name, desired.sub_zones)
+        exists = self.populate(existing, target=True, lenient=True)
+        if exists is None:
+            # If your code gets this warning see Source.populate for more
+            # information
+            self.log.warn('Provider %s used in target mode did not return '
+                          'exists', self.id)
+
+        plan = None
+        if not exists:
+            plan = Plan(existing, desired, [], exists,
+                        self.update_pcent_threshold,
+                        self.delete_pcent_threshold)
+            plan.change_counts['Create'] = 1
+            self.log.info('plan:   %s', plan)
+        return plan
+
+    def _apply(self, plan):
+        desired = plan.desired
+        self.log.info('_apply:   creating zone=%s', desired.name)
+        data = {
+            'name': desired.name,
+            'kind': 'Slave',
+            'masters': self.primary_addresses,
+        }
+        try:
+            self._post('zones', data)
+        except HTTPError as e:
+            self.log.error('_apply:   status=%d, text=%s',
+                           e.response.status_code,
+                           e.response.text)
+            raise
+        self.log.debug('_apply:   created')
+
+
+class PowerDnsSecondaryRemovalProvider(PowerDnsBaseProvider):
+    """
+    PowerDNS API v4 Provider for secondary zone removal
+
+    powerdns-secondary:
+        class: octodns.provider.powerdns.PowerDnsSecondaryProvider
+        # The host on which PowerDNS api is listening (required)
+        host: fqdn
+        # The api key that grans access (required)
+        api_key: api-key
+        # The port on which PowerDNS api is listening (optional, default 8081)
+        port: 8081
+    """
+
+    def __init__(self, id, host, api_key, port=8081, *args, **kwargs):
+        self.log = logging.getLogger('PowerDnsSecondaryRemovalProvider[{}]'.format(id))
+        self.log.debug('__init__: id=%s, host=%s, port=%d',
+                       id, host, int(port))
+        super(PowerDnsSecondaryRemovalProvider, self).\
+            __init__(id, host=host, api_key=api_key, port=int(port), *args, **kwargs)
+
+    def plan(self, desired):
+        self.log.info('plan: desired=%s', desired.name)
+
+        existing = Zone(desired.name, desired.sub_zones)
+        exists = self.populate(existing, target=True, lenient=True)
+        if exists is None:
+            # If your code gets this warning see Source.populate for more
+            # information
+            self.log.warn('Provider %s used in target mode did not return '
+                          'exists', self.id)
+
+        plan = None
+        if exists:
+            plan = Plan(desired, existing, [], exists,
+                        self.update_pcent_threshold,
+                        self.delete_pcent_threshold)
+            plan.change_counts['Delete'] = 1
+            self.log.info('plan:   %s', plan)
+        return plan
+
+    def _delete(self, path):
+        return self._request('DELETE', path)
+
+    def _apply(self, plan):
+        desired = plan.desired
+        self.log.info('_apply:   removing zone=%s', desired.name)
+        try:
+            self._delete('zones/{}'.format(desired.name))
+        except HTTPError as e:
+            self.log.error('_apply:   status=%d, text=%s',
+                           e.response.status_code,
+                           e.response.text)
+            raise
+        self.log.debug('_apply:   removed')
